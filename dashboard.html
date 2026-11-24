@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Spice &amp; Grill Bistro | Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<style>
+:root{--gold:#d9b25f;--gold2:#a8782a;--ink:#0e0b08;--card:#1a1510}
+body{font-family:Inter,system-ui,sans-serif;background:radial-gradient(900px 500px at 50% -100px,#2a2012,var(--ink));color:#f3ead8;min-height:100vh}
+.serif{font-family:'Cormorant Garamond',serif}
+.card{background:linear-gradient(160deg,#241c13,var(--card));border:1px solid rgba(217,178,95,.22);border-radius:18px;box-shadow:0 1px 0 rgba(255,255,255,.06) inset,0 10px 24px rgba(0,0,0,.5),0 2px 0 #000}
+.card.busy{border-color:var(--gold);box-shadow:0 0 0 1px rgba(217,178,95,.4),0 10px 24px rgba(0,0,0,.5)}
+.gbtn{background:linear-gradient(180deg,#f0d487,var(--gold) 50%,var(--gold2));color:#1b1307;font-weight:700;border-radius:12px;box-shadow:0 4px 0 #6d4b13,0 8px 16px rgba(0,0,0,.4);transition:transform .12s,box-shadow .12s}
+.gbtn:active{transform:translateY(3px);box-shadow:0 1px 0 #6d4b13}
+.obtn{border:1px solid rgba(217,178,95,.5);color:var(--gold);border-radius:12px;font-weight:600}
+.tab{white-space:nowrap;padding:8px 14px;border-radius:999px;border:1px solid rgba(217,178,95,.3);font-size:14px;color:#cdbf9f}
+.tab.on{background:var(--gold);color:#1b1307;font-weight:700}
+.badge{font-size:12px;padding:2px 8px;border-radius:999px;border:1px solid rgba(217,178,95,.4);color:var(--gold)}
+.badge.ready{background:#1f3a27;border-color:#3fae5a;color:#7fe099}
+.pin{font-size:32px;text-align:center;letter-spacing:.5em;background:#120e09;border:2px solid var(--gold);border-radius:14px;padding:12px;width:100%;color:#fff;outline:none}
+.pop{animation:pop .3s ease-out}@keyframes pop{from{transform:translateY(-16px);opacity:0}}
+.shake{animation:sh .35s}@keyframes sh{25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important}}
+button:focus-visible,input:focus-visible{outline:3px solid #fff}
+</style>
+</head>
+<body>
+<div id="app" class="max-w-6xl mx-auto px-4 pb-16"></div>
+<div id="toast" class="fixed top-3 inset-x-0 z-50 flex justify-center pointer-events-none"></div>
+<script>
+const DB_URL='https://restaurant-orders-dba5b-default-rtdb.asia-southeast1.firebasedatabase.app';
+const PINS={'2486':'owner','5190':'kitchen'};
+const LBL={confirmed:'Order Confirmed',preparing:'Preparing',ready:'Ready'};
+const $=id=>document.getElementById(id);
+let role=null,view='tables',tab='active',D={},H={},conn='connecting',soundOn=true,AC=null,seen=new Set(),first=true;
+try{role=sessionStorage.getItem('role')}catch(e){}
+if(role&&!['owner','kitchen'].includes(role))role=null;
+if(role==='kitchen')view='kitchen';
+
+/* Sound */
+function unlock(){try{AC=AC||new(window.AudioContext||window.webkitAudioContext)();if(AC.state==='suspended')AC.resume()}catch(e){}}
+function chime(force){if(!soundOn&&!force)return;unlock();if(!AC)return;[880,1175,1480].forEach((f,i)=>{const o=AC.createOscillator(),g=AC.createGain(),t=AC.currentTime+i*.16;o.type='sine';o.frequency.value=f;g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.3,t+.02);g.gain.exponentialRampToValueAtTime(.0001,t+.55);o.connect(g);g.connect(AC.destination);o.start(t);o.stop(t+.6)})}
+function toast(m){const t=$('toast');t.innerHTML=`<div class="pop card px-5 py-3 font-semibold" style="color:var(--gold)">${m}</div>`;clearTimeout(toast.t);toast.t=setTimeout(()=>t.innerHTML='',4000)}
+
+/* Firebase */
+firebase.initializeApp({databaseURL:DB_URL});
+const db=firebase.database();
+db.ref('.info/connected').on('value',s=>{conn=s.val()?'live':'offline';pill()});
+setTimeout(()=>{if(conn==='connecting'){conn='offline';pill()}},10000);
+db.ref('orders').on('value',s=>{
+  D=s.val()||{};
+  let n=[];all().forEach(o=>{if(!seen.has(o.id)){seen.add(o.id);n.push(o)}});
+  if(n.length&&!first&&role){chime();toast('New order: Table '+String(n[n.length-1].table).padStart(2,'0'))}
+  first=false;draw();
+},()=>{conn='error';pill()});
+db.ref('history').limitToLast(200).on('value',s=>{H=s.val()||{};draw()},()=>{});
+
+function pill(){const e=$('pill');if(!e)return;
+  const m={connecting:['Connecting…','#d9b25f'],live:['Connected','#3fae5a'],offline:['Offline. Changes will sync when you reconnect.','#d4483b'],error:['Cannot read the database. Check that the Firebase rules allow read and write.','#d4483b']}[conn];
+  e.textContent=m[0];e.style.color=m[1]}
+
+/* Helpers */
+const all=()=>Object.values(D).flatMap(t=>Object.values(t||{})).filter(o=>o&&o.id).sort((a,b)=>(a.ts||0)-(b.ts||0));
+const hist=()=>Object.values(H).filter(o=>o&&o.id).sort((a,b)=>(b.paidAt||0)-(a.paidAt||0));
+const rs=n=>'₹'+(n||0);
+const tn=n=>'T-'+String(n).padStart(2,'0');
+const sum=o=>(o.items||[]).map(i=>`${i.n} ×${i.q}`).join(', ');
+const hm=ts=>ts?new Date(ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
+function setSt(t,id,s){db.ref(`orders/T${t}/${id}/status`).set(s)}
+function pay(t){
+  const os=Object.values(D['T'+t]||{}).filter(o=>o&&o.id&&!o.paid);
+  if(!os.length||!confirm(`Confirm payment received for table ${tn(t)} (${rs(os.reduce((s,o)=>s+o.total,0))})?`))return;
+  const u={};os.forEach(o=>{u['orders/T'+t+'/'+o.id]=null;u['history/'+o.id]={...o,paid:true,paidAt:firebase.database.ServerValue.TIMESTAMP}});
+  db.ref().update(u).then(()=>toast('Payment recorded for '+tn(t))).catch(()=>toast('Could not record payment. Try again.'))}
+function tog(){soundOn=!soundOn;if(soundOn)chime(true);draw()}
+function setView(v){view=v;draw()}
+function setTab(t){tab=t;draw()}
+function lock(){role=null;try{sessionStorage.removeItem('role')}catch(e){}draw()}
+function tryPin(v){if(v.length<4)return;const r=PINS[v];
+  if(r){role=r;view=r==='kitchen'?'kitchen':'tables';try{sessionStorage.setItem('role',r)}catch(e){}unlock();draw()}
+  else{const i=$('pin');i.value='';i.classList.add('shake');$('pe').textContent='Incorrect PIN. Please try again.';setTimeout(()=>i.classList.remove('shake'),400)}}
+
+/* Views */
+function brand(sub,right){return `<header class="pt-6 pb-4 flex flex-wrap items-end justify-between gap-3"><div><h1 class="serif text-3xl font-bold" style="color:var(--gold)">Spice &amp; Grill Bistro</h1><div class="text-sm text-stone-400">${sub}</div></div><div class="flex items-center gap-2 flex-wrap justify-end"><span id="pill" class="text-xs font-semibold max-w-[240px] text-right"></span>${right||''}</div></header>`}
+function draw(){
+  const a=$('app');
+  if(!role){
+    if(document.activeElement&&document.activeElement.id==='pin')return;
+    a.innerHTML=brand('Staff access')+`<div class="card p-6 mt-8 max-w-sm mx-auto text-center"><h2 class="serif text-2xl font-bold mb-1">Enter your PIN</h2><p class="text-sm text-stone-400 mb-4">Owner and kitchen staff only</p><input id="pin" type="password" inputmode="numeric" maxlength="4" autocomplete="off" aria-label="PIN" class="pin" oninput="tryPin(this.value)"><div id="pe" class="text-red-400 h-6 mt-2 text-sm" role="alert"></div></div>`;
+    pill();setTimeout(()=>$('pin')&&$('pin').focus(),50);return}
+  const owner=role==='owner';
+  const ctl=`<button class="obtn px-3 py-2 text-sm" onclick="tog()">Sound: ${soundOn?'ON':'Muted'}</button>`+(owner?`<button class="obtn px-3 py-2 text-sm" onclick="setView('${view==='kitchen'?'tables':'kitchen'}')">${view==='kitchen'?'Owner Dashboard':'Kitchen Display'}</button>`:'')+`<button class="obtn px-3 py-2 text-sm" onclick="lock()">Lock</button>`;
+  a.innerHTML=brand(view==='kitchen'?'Kitchen Display':'Owner Counter',ctl)+(view==='kitchen'?kitchen():ownerView());pill()}
+function kitchen(){
+  const os=all().filter(o=>!o.paid).sort((a,b)=>(a.status==='ready')-(b.status==='ready')||(a.ts||0)-(b.ts||0));
+  if(!os.length)return '<p class="text-center text-stone-400 mt-16 text-lg">No active orders.</p>';
+  return `<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">`+os.map(o=>`<div class="card p-4 ${o.status==='ready'?'opacity-50':'busy'}"><div class="flex justify-between items-center"><b class="text-2xl">Table ${tn(o.table)}</b><span class="badge ${o.status==='ready'?'ready':''}">${LBL[o.status]||o.status}</span></div><div class="text-xs text-stone-400">Order #${o.id.slice(-4).toUpperCase()} · ${hm(o.ts)}</div><ul class="my-3 space-y-1">${(o.items||[]).map(i=>`<li class="text-lg"><b>${i.q} ×</b> ${i.n}</li>`).join('')}</ul><div class="flex gap-2">${o.status==='confirmed'?`<button class="gbtn flex-1 py-3" onclick="setSt(${o.table},'${o.id}','preparing')">Preparing</button>`:''}${o.status!=='ready'?`<button class="gbtn flex-1 py-3" onclick="setSt(${o.table},'${o.id}','ready')">Ready</button>`:''}</div></div>`).join('')+'</div>'}
+function ownerView(){
+  const act=all().filter(o=>!o.paid),by={};act.forEach(o=>(by[o.table]=by[o.table]||[]).push(o));
+  const total=act.reduce((s,o)=>s+o.total,0);
+  const grid=Array.from({length:10},(_,i)=>{const n=i+1,os=by[n]||[],t=os.reduce((s,o)=>s+o.total,0);
+    return `<div class="card p-4 ${os.length?'busy':''}"><div class="flex justify-between items-center"><b class="text-xl">${tn(n)}</b><b class="text-xl" style="color:var(--gold)">${rs(t)}</b></div>`+
+    (os.length?`<div class="my-2 space-y-1 text-sm text-stone-300">${os.map(o=>`<div>${sum(o)} <span class="badge ml-1 ${o.status==='ready'?'ready':''}">${LBL[o.status]||o.status}</span></div>`).join('')}</div><button class="gbtn w-full py-3 mt-2" onclick="pay(${n})">Payment Received</button>`:`<p class="text-sm text-stone-500 my-4">No active orders</p>`)+`</div>`}).join('');
+  let feed=tab==='active'?act.slice().reverse():tab==='paid'?hist():[...act,...hist()].sort((a,b)=>(b.ts||0)-(a.ts||0));
+  const tabs=[['active','Active / Unpaid'],['paid','Paid History'],['all','All Orders']].map(([k,l])=>`<button class="tab ${tab===k?'on':''}" onclick="setTab('${k}')">${l}</button>`).join('');
+  return `<div class="card p-4 mb-4 flex justify-between items-center"><span class="text-stone-300">Total unpaid across all tables</span><b class="text-2xl" style="color:var(--gold)">${rs(total)}</b></div>
+  <h2 class="serif text-2xl font-bold mb-2">Tables</h2><div class="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-5">${grid}</div>
+  <h2 class="serif text-2xl font-bold mt-8 mb-2">Live Order Feed</h2><div class="flex gap-2 overflow-x-auto mb-3">${tabs}</div>
+  <div class="space-y-2">${feed.length?feed.slice(0,100).map(o=>`<div class="card p-3 flex flex-wrap justify-between gap-2"><div class="min-w-0"><b>Table ${tn(o.table)}</b> <span class="text-xs text-stone-400">#${o.id.slice(-4).toUpperCase()} · ${hm(o.ts)}</span><div class="text-sm text-stone-300">${sum(o)}</div></div><div class="text-right"><b>${rs(o.total)}</b><div><span class="badge ${o.paid?'ready':''}">${o.paid?'Paid':(LBL[o.status]||o.status)}</span></div></div></div>`).join(''):'<p class="text-stone-400 text-center py-8">No orders to show.</p>'}</div>`}
+draw();
+</script>
+</body>
+</html>
